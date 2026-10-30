@@ -1,0 +1,375 @@
+# cloudide:auto
+name: CloudIDE Auto Build
+on:
+  workflow_dispatch:
+    inputs:
+      task:
+        description: Gradle task (used for Gradle projects)
+        default: assembleDebug
+      gradle:
+        description: Gradle version
+        default: '9.8.2'
+      jdk:
+        description: JDK version
+        default: '21'
+      artifact:
+        description: Extra output files pattern
+        default: ''
+      compiler:
+        description: Java compiler for plain Java projects (javac or ecj)
+        default: javac
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: ${{ github.event.inputs.jdk || '21' }}
+      - name: Detect what to build
+        id: plan
+        shell: bash
+        run: |
+          set +u
+          IFS=$'\n'
+          PLAN="$RUNNER_TEMP/plan.txt"
+          : > "$PLAN"
+
+          # Folders that never hold project sources worth building.
+          PRUNE=( -name node_modules -o -name build -o -name target -o -name .git -o -name .gradle -o -name dist -o -name vendor -o -name .dart_tool -o -name cloudide-out -o -name .cloudide -o -name .venv -o -name venv -o -name Pods -o -name .idea )
+          find_files() {
+            find . -maxdepth 4 \( "${PRUNE[@]}" \) -prune -o -type f -name "$1" -print 2>/dev/null | sed 's|^\./||' | sort
+          }
+          dirs_of() { while read -r f; do [ -n "$f" ] && dirname "$f"; done | sort -u; }
+          under() { # under CHILD PARENT: CHILD is strictly inside PARENT
+            [ "$1" = "$2" ] && return 1
+            [ "$2" = "." ] && return 0
+            case "$1/" in "$2"/*) return 0;; esac
+            return 1
+          }
+          under_or_eq() { [ "$1" = "$2" ] && return 0; under "$1" "$2"; }
+          gradle_mentions() {
+            find "$1" -maxdepth 3 -type f \( -name 'build.gradle' -o -name 'build.gradle.kts' \) -print0 2>/dev/null | xargs -0 -r grep -qsiE "$2"
+          }
+
+          # ---- build.sh in the project root always wins: it is the project's own build
+          if [ -f build.sh ]; then
+            printf 'script\t.\n' >> "$PLAN"
+          else
+            # Flutter apps (their android/ folder belongs to Flutter)
+            flutter_dirs=""
+            while read -r f; do
+              [ -n "$f" ] && grep -qsE '^[[:space:]]*flutter:' "$f" && flutter_dirs="${flutter_dirs}$(dirname "$f")"$'\n'
+            done < <(find_files pubspec.yaml)
+
+            # Gradle projects (Android, Kotlin, Java, Compose, NDK)
+            gradle_all=$( { find_files settings.gradle; find_files settings.gradle.kts; } | dirs_of )
+            if [ -z "$gradle_all" ]; then
+              if [ -f build.gradle ] || [ -f build.gradle.kts ]; then gradle_all="."; fi
+            fi
+            gradle_dirs=""
+            for g in $gradle_all; do
+              skip=0
+              for fd in $flutter_dirs; do under "$g" "$fd" && skip=1; done
+              [ $skip -eq 0 ] && gradle_dirs="${gradle_dirs}${g}"$'\n'
+            done
+
+            # Code that Gradle already compiles must not be built a second time
+            native_skip() {
+              case "$1/" in */src/main/*) return 0;; esac
+              for g in $gradle_dirs; do
+                if under_or_eq "$1" "$g" && gradle_mentions "$g" 'externalNativeBuild|ndkBuild|cmake'; then return 0; fi
+              done
+              for fd in $flutter_dirs; do under_or_eq "$1" "$fd" && return 0; done
+              return 1
+            }
+
+            # Node / JavaScript / TypeScript (outermost package.json only)
+            node_all=$(find_files package.json | dirs_of)
+            node_dirs=""
+            for d in $node_all; do
+              skip=0
+              for o in $node_all; do under "$d" "$o" && skip=1; done
+              for fd in $flutter_dirs; do under_or_eq "$d" "$fd" && skip=1; done
+              [ $skip -eq 0 ] && node_dirs="${node_dirs}${d}"$'\n'
+            done
+
+            # Rust (workspace members are built by their root; Gradle-driven crates are left to Gradle)
+            cargo_all=$(find_files Cargo.toml | dirs_of)
+            rust_dirs=""
+            rust_ndk=false
+            for d in $cargo_all; do
+              skip=0
+              for o in $cargo_all; do under "$d" "$o" && skip=1; done
+              for fd in $flutter_dirs; do under_or_eq "$d" "$fd" && skip=1; done
+              for g in $gradle_dirs; do
+                if under_or_eq "$d" "$g" && gradle_mentions "$g" 'cargo|rust'; then skip=1; rust_ndk=true; fi
+              done
+              [ $skip -eq 0 ] && rust_dirs="${rust_dirs}${d}"$'\n'
+            done
+
+            # Maven
+            pom_all=$(find_files pom.xml | dirs_of)
+            maven_dirs=""
+            for d in $pom_all; do
+              skip=0
+              for o in $pom_all; do under "$d" "$o" && skip=1; done
+              [ $skip -eq 0 ] && maven_dirs="${maven_dirs}${d}"$'\n'
+            done
+
+            # Plain Java sources with no Gradle or Maven project around them (built with javac, or Eclipse's ECJ)
+            java_dirs=""
+            if [ -z "$gradle_dirs" ] && [ -z "$maven_dirs" ] && [ -z "$flutter_dirs" ] && [ -n "$(find_files '*.java' | head -n 1)" ]; then
+              java_dirs="."$'\n'
+            fi
+
+            # Go, Python
+            go_dirs=$(find_files go.mod | dirs_of)
+            py_dirs=$( { find_files pyproject.toml; find_files setup.py; } | dirs_of )
+
+            # .NET: a solution wins over the projects inside it
+            sln_dirs=$(find_files '*.sln' | dirs_of)
+            dotnet_dirs="$sln_dirs"$'\n'
+            for d in $(find_files '*.csproj' | dirs_of); do
+              skip=0
+              for s in $sln_dirs; do under_or_eq "$d" "$s" && skip=1; done
+              [ $skip -eq 0 ] && dotnet_dirs="${dotnet_dirs}${d}"$'\n'
+            done
+
+            # CMake and plain Makefiles that are not part of a Gradle/Flutter build
+            cmake_all=$(find_files CMakeLists.txt | dirs_of)
+            cmake_dirs=""
+            for d in $cmake_all; do
+              skip=0
+              native_skip "$d" && skip=1
+              for o in $cmake_all; do under "$d" "$o" && skip=1; done
+              [ $skip -eq 0 ] && cmake_dirs="${cmake_dirs}${d}"$'\n'
+            done
+            make_dirs=""
+            for d in $( { find_files Makefile; find_files makefile; find_files GNUmakefile; } | dirs_of ); do
+              skip=0
+              native_skip "$d" && skip=1
+              for m in CMakeLists.txt Cargo.toml package.json go.mod pom.xml pyproject.toml setup.py; do
+                [ -f "$d/$m" ] && skip=1
+              done
+              [ $skip -eq 0 ] && make_dirs="${make_dirs}${d}"$'\n'
+            done
+
+            emit() { lang="$1"; shift; for d in "$@"; do [ -n "$d" ] && printf '%s\t%s\n' "$lang" "$d" >> "$PLAN"; done; }
+            emit node $node_dirs
+            emit flutter $flutter_dirs
+            emit rust $rust_dirs
+            emit gradle $gradle_dirs
+            emit maven $maven_dirs
+            emit java $java_dirs
+            emit go $go_dirs
+            emit python $py_dirs
+            emit dotnet $dotnet_dirs
+            emit cmake $cmake_dirs
+            emit make $make_dirs
+          fi
+
+          has() { awk -F'\t' -v l="$1" '$1==l{f=1} END{exit !f}' "$PLAN"; }
+          g=false; n=false; f=false
+          has gradle && g=true
+          has node && n=true
+          has flutter && f=true
+          if [ -f build.sh ] && { [ -f settings.gradle ] || [ -f settings.gradle.kts ] || [ -f build.gradle ] || [ -f build.gradle.kts ]; }; then g=true; fi
+          {
+            echo "gradle=$g"
+            echo "node=$n"
+            echo "flutter=$f"
+            echo "rust_ndk=${rust_ndk:-false}"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "CloudIDE found these builds:"
+          if [ -s "$PLAN" ]; then awk -F'\t' '{printf "  %-8s %s\n", $1, $2}' "$PLAN"; else echo "  nothing it knows how to build"; fi
+      - uses: gradle/actions/setup-gradle@v5
+        if: steps.plan.outputs.gradle == 'true'
+        with:
+          gradle-version: ${{ github.event.inputs.gradle || '9.8.2' }}
+      - uses: actions/setup-node@v7
+        if: steps.plan.outputs.node == 'true'
+        with:
+          node-version: lts/*
+      - uses: subosito/flutter-action@v2
+        if: steps.plan.outputs.flutter == 'true'
+        with:
+          channel: stable
+          cache: true
+      - uses: actions/cache@v6
+        if: steps.plan.outputs.gradle == 'true'
+        with:
+          path: ~/.android/debug.keystore
+          key: debug-keystore-v1
+      - uses: actions/cache@v6
+        if: steps.plan.outputs.rust_ndk == 'true'
+        with:
+          path: ~/.cargo/bin/cargo-ndk
+          key: cargo-ndk-v1
+      - name: Rust toolchain for Android
+        if: steps.plan.outputs.rust_ndk == 'true'
+        run: |
+          rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android
+          if [ ! -x "$HOME/.cargo/bin/cargo-ndk" ]; then cargo install cargo-ndk --locked; fi
+          echo "ANDROID_NDK_HOME=${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_ROOT}" >> "$GITHUB_ENV"
+      - name: Build everything
+        shell: bash
+        env:
+          TASK: ${{ github.event.inputs.task }}
+          JAVA_COMPILER: ${{ github.event.inputs.compiler }}
+          JDK: ${{ github.event.inputs.jdk || '21' }}
+        run: |
+          set +e
+          OUT="$PWD/cloudide-out"
+          mkdir -p "$OUT"
+          export OUT
+          PLAN="$RUNNER_TEMP/plan.txt"
+          RESULTS="$RUNNER_TEMP/results.txt"
+          STAMP="$RUNNER_TEMP/stamp"
+          : > "$RESULTS"
+          TASK="${TASK:-assembleDebug}"
+          JAVA_COMPILER="${JAVA_COMPILER:-javac}"
+          JDK="${JDK:-21}"
+
+          slug() { echo "$1" | sed 's|^\./||; s|[^A-Za-z0-9._-]|-|g; s|^\.$|root|'; }
+
+          # step LABEL DIR COMMAND...   runs in a subshell with set -e and records PASS or FAIL
+          step() {
+            label="$1"; dir="$2"; shift 2
+            echo "##[group]$label  ($dir)"
+            ( set -e; export CUR="$dir"; cd "$dir"; "$@" ) < /dev/null
+            rc=$?
+            echo "##[endgroup]"
+            if [ $rc -eq 0 ]; then echo "PASS  $label  ($dir)" >> "$RESULTS"; else echo "FAIL  $label  ($dir)  exit $rc" >> "$RESULTS"; fi
+            return $rc
+          }
+
+          # collect NAME DIR PATTERN...   copies matching files into $OUT/NAME/<dir>/
+          collect() {
+            name="$1"; dir="$2"; shift 2
+            dest="$OUT/$name/$(slug "$dir")"
+            mkdir -p "$dest"
+            for pat in "$@"; do
+              find "$dir" -type f -path "$pat" -not -path '*/node_modules/*' -not -name 'original-*' -not -name '*-sources.jar' -not -name '*-javadoc.jar' -exec cp -f {} "$dest/" \; 2>/dev/null
+            done
+          }
+
+          # collect_bin NAME DIR SRC DEPTH   copies executables, .so and .a files (not intermediates) from DIR/SRC
+          collect_bin() {
+            name="$1"; dir="$2"; src="$3"; depth="$4"
+            dest="$OUT/$name/$(slug "$dir")"
+            mkdir -p "$dest"
+            find "$dir/$src" -maxdepth "$depth" -type f \( -perm -u+x -o -name '*.so' -o -name '*.a' \) -not -path '*/CMakeFiles/*' -not -name '*.cmake' -not -name '*.sh' -exec cp -f {} "$dest/" \; 2>/dev/null
+          }
+
+          do_gradle() {
+            T="$TASK"
+            # A plain JVM project has no assembleDebug
+            if [ "$T" = "assembleDebug" ] && ! grep -rqsE 'com\.android' build.gradle build.gradle.kts */build.gradle */build.gradle.kts 2>/dev/null; then T="assemble"; fi
+            if [ -f ./gradlew ]; then chmod +x ./gradlew; ./gradlew --no-daemon $T; else gradle --no-daemon $T; fi
+          }
+          do_node() {
+            if [ -f pnpm-lock.yaml ]; then npm install -g pnpm && { pnpm install --frozen-lockfile || pnpm install; }
+            elif [ -f yarn.lock ]; then { corepack enable 2>/dev/null || true; }; yarn install --frozen-lockfile || yarn install
+            elif [ -f package-lock.json ]; then npm ci || npm install
+            else npm install; fi
+            npm run build --if-present
+          }
+          do_flutter() {
+            if [ ! -d android ]; then
+              ORG=$(cat .flutter-org 2>/dev/null || echo com.example)
+              cp lib/main.dart /tmp/main.dart 2>/dev/null || true
+              flutter create --platforms=android --org "$ORG" .
+              cp /tmp/main.dart lib/main.dart 2>/dev/null || true
+            fi
+            flutter build apk --debug
+          }
+          do_rust() { cargo build --release; }
+          do_maven() { if [ -f ./mvnw ]; then chmod +x ./mvnw; ./mvnw -B -q package -DskipTests; else mvn -B -q package -DskipTests; fi; }
+          do_java() {
+            D="$OUT/java/$(slug "$CUR")"
+            mkdir -p "$D/classes"
+            find . -name '*.java' -not -path '*/node_modules/*' -not -path './cloudide-out/*' -not -path '*/build/*' -not -path '*/.git/*' > "$RUNNER_TEMP/java-src.txt"
+            REL=""
+            case "$JDK" in ''|*[!0-9]*) ;; *) REL="--release $JDK" ;; esac
+            if [ "$JAVA_COMPILER" = "ecj" ]; then
+              ECJ="$RUNNER_TEMP/ecj.jar"
+              [ -f "$ECJ" ] || curl -fsSL -o "$ECJ" "https://repo1.maven.org/maven2/org/eclipse/jdt/ecj/3.46.100/ecj-3.46.100.jar"
+              java -jar "$ECJ" $REL -nowarn -d "$D/classes" "@$RUNNER_TEMP/java-src.txt"
+            else
+              javac $REL -d "$D/classes" "@$RUNNER_TEMP/java-src.txt"
+            fi
+            jar cf "$D/$(slug "$CUR").jar" -C "$D/classes" .
+            rm -rf "$D/classes"
+          }
+          do_go() { mkdir -p "$OUT/go/$(slug "$CUR")"; go build -o "$OUT/go/$(slug "$CUR")/" ./...; }
+          do_python() {
+            V="$RUNNER_TEMP/venv-$(slug "$CUR")"
+            python3 -m venv "$V" && . "$V/bin/activate" && pip install --quiet build && python -m build --outdir "$OUT/python/$(slug "$CUR")" .
+          }
+          do_dotnet() { dotnet publish -c Release -o "$OUT/dotnet/$(slug "$CUR")" || dotnet build -c Release; }
+          do_cmake() { cmake -S . -B build-cmake -DCMAKE_BUILD_TYPE=Release && cmake --build build-cmake -j"$(nproc)"; }
+          do_make() { touch -d "1 second ago" "$STAMP"; make -j"$(nproc)"; }
+
+          while IFS=$'\t' read -r lang dir; do
+            [ -z "$lang" ] && continue
+            case "$lang" in
+              script)
+                export NDK="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_ROOT}"
+                export NDKBIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+                step "build.sh" "$dir" bash build.sh ;;
+              node)
+                step "Node" "$dir" do_node
+                for o in dist build out; do
+                  if [ -d "$dir/$o" ]; then mkdir -p "$OUT/node/$(slug "$dir")"; cp -r "$dir/$o" "$OUT/node/$(slug "$dir")/"; fi
+                done ;;
+              flutter)
+                step "Flutter" "$dir" do_flutter && collect flutter "$dir" '*/build/app/outputs/flutter-apk/*.apk' ;;
+              rust)
+                step "Rust" "$dir" do_rust && collect_bin rust "$dir" target/release 1 ;;
+              gradle)
+                step "Gradle ($TASK)" "$dir" do_gradle && collect jvm "$dir" '*/build/libs/*.jar' ;;
+              maven)
+                step "Maven" "$dir" do_maven && collect maven "$dir" '*/target/*.jar' ;;
+              java)   step "Java ($JAVA_COMPILER)" "$dir" do_java ;;
+              go)     step "Go" "$dir" do_go ;;
+              python) step "Python" "$dir" do_python ;;
+              dotnet) step "dotnet" "$dir" do_dotnet ;;
+              cmake)
+                step "CMake" "$dir" do_cmake && collect_bin cmake "$dir" build-cmake 3 ;;
+              make)
+                step "make" "$dir" do_make
+                find "$dir" -maxdepth 3 -type f -perm -u+x -newer "$STAMP" -not -path '*/.git/*' -exec cp -f {} "$OUT/" \; 2>/dev/null ;;
+            esac
+          done < "$PLAN"
+
+          find "$OUT" -type d -empty -delete 2>/dev/null
+
+          echo
+          echo "================ CloudIDE build summary ================"
+          if [ ! -s "$RESULTS" ]; then
+            echo "Nothing to build. CloudIDE looks for these files (up to 3 folders deep):"
+            echo "  build.sh, settings.gradle, pubspec.yaml (Flutter), package.json, Cargo.toml,"
+            echo "  pom.xml, .java files, go.mod, pyproject.toml / setup.py, *.sln / *.csproj, CMakeLists.txt, Makefile"
+            exit 1
+          fi
+          cat "$RESULTS"
+          echo
+          echo "Output files:"
+          ( cd "$OUT" && find . -type f | sed 's|^\./|  |' )
+          if grep -q '^FAIL' "$RESULTS"; then echo; echo "Some builds failed, see the groups above."; exit 1; fi
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: output
+          path: |
+            cloudide-out/**
+            **/build/outputs/apk/**/*.apk
+            **/build/outputs/bundle/**/*.aab
+            ${{ github.event.inputs.artifact }}
+          if-no-files-found: warn

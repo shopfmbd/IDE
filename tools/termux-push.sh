@@ -6,20 +6,38 @@
 # Sign-in: the script uses GitHub CLI and asks you to approve a code in the browser (token only as a fallback).
 #
 # Defaults can be changed with environment variables:
-#   REPO_OWNER / REPO_NAME / GIT_EMAIL   the GitHub account and repository
+#   REPO_OWNER / REPO_NAME / GIT_EMAIL   the GitHub account and repository (nothing is baked in: when not set,
+#                                        they are read from the working copy's origin remote, then the GitHub CLI
+#                                        login and git config, and only asked for if still unknown)
 #   WORKDIR                              where the working copy lives (inside Termux)
 #   BACKUP_DIR                           where backups go (internal storage, survives uninstalling Termux)
 #   REMOTE                               full remote URL; when set, no token is asked for (used for testing)
 set -euo pipefail
 
 REPO_OWNER="${REPO_OWNER:-}"
-REPO_NAME="${REPO_NAME:-IDE}"
+REPO_NAME="${REPO_NAME:-}"
 GIT_EMAIL="${GIT_EMAIL:-}"
 GIT_NAME="${GIT_NAME:-}"
+WORKDIR="${WORKDIR:-$HOME/IDE}"
+
+# Account and repository come from what is already on this phone, never from the zip:
+#   1. the origin remote of the existing working copy   2. the GitHub CLI login   3. git config   4. ask
+if [ -d "$WORKDIR/.git" ]; then
+  RURL="$(git -C "$WORKDIR" remote get-url origin 2>/dev/null || true)"
+  if [[ "$RURL" =~ github\.com[:/]([^/]+)/([^/]+)$ ]]; then
+    [ -n "$REPO_OWNER" ] || REPO_OWNER="${BASH_REMATCH[1]}"
+    [ -n "$REPO_NAME" ] || REPO_NAME="${BASH_REMATCH[2]%.git}"
+  fi
+fi
+if [ -z "$REPO_OWNER" ] && command -v gh >/dev/null 2>&1; then
+  REPO_OWNER="$(gh api user -q .login 2>/dev/null || true)"
+fi
+[ -n "$GIT_EMAIL" ] || GIT_EMAIL="$(git -C "$WORKDIR" config --get user.email 2>/dev/null || git config --global --get user.email 2>/dev/null || true)"
+[ -n "$GIT_NAME" ] || GIT_NAME="$(git -C "$WORKDIR" config --get user.name 2>/dev/null || git config --global --get user.name 2>/dev/null || true)"
 [ -n "$REPO_OWNER" ] || read -rp "GitHub username: " REPO_OWNER
+[ -n "$REPO_NAME" ] || { read -rp "Repository name [$(basename "$WORKDIR")]: " REPO_NAME; REPO_NAME="${REPO_NAME:-$(basename "$WORKDIR")}"; }
 [ -n "$GIT_EMAIL" ] || read -rp "Git email (e.g. name@gmail.com): " GIT_EMAIL
 GIT_NAME="${GIT_NAME:-$REPO_OWNER}"
-WORKDIR="${WORKDIR:-$HOME/IDE}"
 BRANCH="main"
 DOWNLOADS="${DOWNLOADS:-$HOME/storage/shared/Download}"
 ZIP="${1:-$(ls -t "$DOWNLOADS"/IDE*.zip 2>/dev/null | head -n 1)}"
@@ -79,8 +97,14 @@ fi
 say "Using $(basename "$ZIP")"
 TMP="$(mktemp -d)"
 unzip -q "$ZIP" -d "$TMP"
-SRC="$(find "$TMP" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
-[ -n "$SRC" ] || die "The zip has no project folder inside"
+# the zip holds one project folder (IDE-main); a zip with the files directly inside works too
+if [ "$(find "$TMP" -mindepth 1 -maxdepth 1 | wc -l)" = 1 ] && [ -d "$(find "$TMP" -mindepth 1 -maxdepth 1)" ]; then
+  SRC="$(find "$TMP" -mindepth 1 -maxdepth 1)"
+else
+  SRC="$TMP"
+fi
+[ -n "$(ls -A "$SRC" 2>/dev/null)" ] || die "The zip is empty"
+rm -rf "$SRC/.git"   # never let a .git folder from a zip replace your own history or remote
 mkdir -p "$WORKDIR"
 # replace the files but keep the .git folder (history) if there is one
 find "$WORKDIR" -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +

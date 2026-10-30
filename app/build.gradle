@@ -9,8 +9,8 @@ android {
         // because libexec_hook.so (LD_PRELOAD) and libcloudexec.so send every exec through /system/bin/linker64,
         // see NATIVE_EXEC.md. -Pcloudide.targetSdk=28 remains the guaranteed fallback.
         targetSdk = (project.findProperty('cloudide.targetSdk') ?: '37') as Integer
-        versionCode = 25
-        versionName = '4.5.9'
+        versionCode = 26
+        versionName = '4.5.10'
         // arm64 only: the packs, aapt2 and the exec helper (libexec_hook.so, libcloudexec.so) are all arm64-v8a
         ndk { abiFilters.add('arm64-v8a') }
     }

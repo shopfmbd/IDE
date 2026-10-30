@@ -1,3 +1,8 @@
+# 4.5.10
+
+- The zip no longer contains a `.git` folder. It carried a remote and author of another account, so unzipping it into a repository made git treat the project folder as a nested repository (an arrow folder on GitHub, no files) and pushes went to the wrong place.
+- tools/termux-push.sh: no account or repository is baked in. Owner and repository come from the working copy's `origin` remote, then the GitHub CLI login; the git name and email come from git config. It only asks when none of these is known. It also deletes any `.git` found inside a zip before copying, and accepts a zip whose files are directly inside (no `IDE-main` folder).
+
 # 4.5.9
 
 - tools/termux-push.sh: signs in through the browser with GitHub CLI (code shown, approved at github.com/login/device) instead of asking for a token. The token prompt remains only as a fallback.

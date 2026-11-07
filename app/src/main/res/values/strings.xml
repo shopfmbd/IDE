@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Shared -->
+    <string name="app_name">CloudIDE</string>
+    <string name="crash_title">CloudIDE closed unexpectedly</string>
+    <string name="crash_message">The last session ended with an error:\n\n%1$s\n\nThe full details were saved. Open the log to read or share them.</string>
+    <string name="open_log">Open log</string>
+    <string name="dismiss">Dismiss</string>
+    <string name="storage_title">Storage access</string>
+    <string name="storage_message">Allow access to all files to keep projects in shared storage (for example /AppProjects, shared with Termux). Without it, projects live in the app\'s own folder.</string>
+    <string name="allow">Allow</string>
+    <string name="not_now">Not now</string>
+    <string name="no_match_title">No project matches</string>
+    <string name="no_match_body">Try a different name.</string>
+    <string name="empty_title">Start your first project</string>
+    <string name="empty_body">Create a project or import one to get started.</string>
+    <plurals name="project_count">
+        <item quantity="one">%d project</item>
+        <item quantity="other">%d projects</item>
+    </plurals>
+    <!-- Layouts and menus -->
+    <string name="search_projects">Search projects</string>
+    <string name="new_project">New project</string>
+    <string name="clone">Clone</string>
+    <string name="add_project">Add project</string>
+    <string name="find">Find</string>
+    <string name="previous">Previous</string>
+    <string name="next">Next</string>
+    <string name="close">Close</string>
+    <string name="replace_with">Replace with</string>
+    <string name="match_case" translatable="false">Aa</string>
+    <string name="regex_toggle" translatable="false">.*</string>
+    <string name="replace">Replace</string>
+    <string name="all">All</string>
+    <string name="pick_a_file_to">Pick a file to start</string>
+    <string name="swipe_from_the_left">Swipe from the left edge for the file tree, or jump to any file by name.</string>
+    <string name="files">Files</string>
+    <string name="quick_open">Quick open</string>
+    <string name="prev">Prev</string>
+    <string name="terminal_prompt" translatable="false">~ $</string>
+    <string name="command">command</string>
+    <string name="run">Run</string>
+    <string name="cancel_build">Cancel build</string>
+    <string name="get_apk">Get APK</string>
+    <string name="more">More</string>
+    <string name="new_file">New file</string>
+    <string name="new_folder">New folder</string>
+    <string name="refresh">Refresh</string>
+    <string name="save">Save</string>
+    <string name="undo">Undo</string>
+    <string name="redo">Redo</string>
+    <string name="find_and_replace">Find and replace</string>
+    <string name="build">Build</string>
+    <string name="build_and_install">Build and install</string>
+    <string name="install_the_last_apk">Install the last APK</string>
+    <string name="last_apk_save_share">Last APK: save, share or inspect</string>
+    <string name="all_build_files">All build files</string>
+    <string name="build_with_a_chosen">Build with a chosen Gradle task...</string>
+    <string name="build_history_github_runs">Build history (GitHub runs)</string>
+    <string name="github">GitHub</string>
+    <string name="upload_code_only_no">Upload code only (no build)</string>
+    <string name="download_latest_from_github">Download latest from GitHub</string>
+    <string name="open_repository_in_browser">Open repository in browser</string>
+    <string name="reset_the_github_build">Reset the GitHub build file</string>
+    <string name="files_and_search">Files and search</string>
+    <string name="open_a_file_by">Open a file by name</string>
+    <string name="search_text_in_all">Search text in all files</string>
+    <string name="save_all_files">Save all files</string>
+    <string name="edit_text">Edit text</string>
+    <string name="go_to_line">Go to line</string>
+    <string name="comment_or_uncomment">Comment or uncomment</string>
+    <string name="duplicate_line">Duplicate line</string>
+    <string name="delete_line">Delete line</string>
+    <string name="move_line_up">Move line up</string>
+    <string name="move_line_down">Move line down</string>
+    <string name="indent">Indent</string>
+    <string name="unindent">Unindent</string>
+    <string name="tidy_up_code_format">Tidy up code (format)</string>
+    <string name="view">View</string>
+    <string name="problems_and_build_log">Problems and build log</string>
+    <string name="terminal">Terminal</string>
+    <string name="word_wrap_on_off">Word wrap on / off</string>
+    <string name="app_log_and_diagnostics">App log and diagnostics</string>
+    <string name="project_settings">Project settings</string>
+    <string name="app_settings">App settings</string>
+    <string name="close_project">Close project</string>
+    <string name="settings">Settings</string>
+    <string name="logs_and_diagnostics">Logs and diagnostics</string>
+    <string name="ai_assistant">AI assistant</string>
+    <string name="ai_open">Open the assistant</string>
+    <string name="ai_explain">Explain this code</string>
+    <string name="ai_fix">Fix the problems</string>
+    <string name="ai_refactor">Refactor this code</string>
+    <string name="ai_tests">Write tests</string>
+    <string name="ai_docs">Add documentation</string>
+    <string name="ai_settings">AI settings</string>
+    <string name="ai_web">AI website (Claude, DeepSeek, ChatGPT)</string>
+    <string name="ai_mode">Editing: switch manual or direct</string>
+    <string name="ai_project_ask">Ask about the whole project</string>
+    <string name="ai_project_review">Review the whole project</string>
+    <string name="build_and_github">Build and GitHub</string>
+    <string name="files_and_view">Files and view</string>
+    <string name="project_menu">Project</string>
+    <string name="command_palette">Command palette</string>
+</resources>

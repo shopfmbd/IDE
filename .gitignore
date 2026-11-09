@@ -1,0 +1,26 @@
+# Build output
+build/
+.gradle/
+/app/build/
+*.apk
+*.aab
+
+# IDE and OS files
+local.properties
+*.iml
+.idea/
+.DS_Store
+.cloudide/
+
+# Python caches (toolchain scripts)
+__pycache__/
+*.pyc
+
+# --- encryption safety: never commit unencrypted source or keys ---
+src.tar.gz
+src.zip
+*.gpg.tmp
+*.keystore
+*.jks
+**/release.pk8
+*.pem

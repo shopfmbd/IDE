@@ -1,0 +1,44 @@
+plugins { id 'com.android.application' }
+android {
+    namespace = 'com.fahim.cloudide'
+    compileSdk = 37
+    defaultConfig {
+        applicationId = 'com.fahim.cloudide'
+        minSdk = 26
+        // 37 = current Android. Plain exec from app storage is refused at targetSdk 29+. The native packs still work
+        // because libexec_hook.so (LD_PRELOAD) and libcloudexec.so send every exec through /system/bin/linker64,
+        // see NATIVE_EXEC.md. -Pcloudide.targetSdk=28 remains the guaranteed fallback.
+        targetSdk = (project.findProperty('cloudide.targetSdk') ?: '37') as Integer
+        versionCode = 34
+        versionName = '4.6.4'
+        // arm64 only: the packs, aapt2 and the exec helper (libexec_hook.so, libcloudexec.so) are all arm64-v8a
+        ndk { abiFilters.add('arm64-v8a') }
+    }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+    packaging {
+        // libaapt2.so, libcloudexec.so and libexec_hook.so must be extracted to nativeLibraryDir: the only place Android 10+
+        // lets an app run a binary from (and where the LD_PRELOAD hook is loaded from). Do not turn this off.
+        jniLibs {
+            useLegacyPackaging = true
+            // aapt2, aapt, zipalign, aidl, dexdump and split-select are static executables shipped as lib*.so in
+            // jniLibs/arm64-v8a. Stripping would only waste time on them, so they are kept exactly as built.
+            keepDebugSymbols.add('**/*.so')
+        }
+        // The dex jars and android.jar in assets/toolchain are already compressed zips
+        resources { excludes += ['META-INF/LICENSE*', 'META-INF/NOTICE*'] }
+    }
+    lint {
+        abortOnError = false
+    }
+}
+dependencies {
+    implementation 'androidx.appcompat:appcompat:1.8.0'
+    implementation 'androidx.activity:activity:1.13.0'
+    implementation 'com.google.android.material:material:1.14.0'
+    implementation 'androidx.recyclerview:recyclerview:1.4.0'
+    implementation 'androidx.drawerlayout:drawerlayout:1.2.0'
+    implementation 'androidx.coordinatorlayout:coordinatorlayout:1.3.0'
+}

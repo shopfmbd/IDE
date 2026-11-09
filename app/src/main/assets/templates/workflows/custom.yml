@@ -1,0 +1,75 @@
+# cloudide:custom
+name: Custom Build
+on:
+  workflow_dispatch:
+    inputs:
+      task:
+        description: Gradle task
+        default: assembleDebug
+      gradle:
+        description: Gradle version
+        default: '9.8.2'
+      jdk:
+        description: JDK version
+        default: '21'
+      artifact:
+        description: Output files pattern
+        default: ''
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Decrypt source (only when src.zip.enc exists)
+        env:
+          SOURCE_PASSPHRASE: ${{ secrets.SOURCE_PASSPHRASE }}
+        run: |
+          if [ -f src.zip.enc ]; then
+            [ -n "$SOURCE_PASSPHRASE" ] || { echo 'Secret SOURCE_PASSPHRASE is missing'; exit 1; }
+            openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass env:SOURCE_PASSPHRASE -in src.zip.enc -out src.zip
+            unzip -qo src.zip
+            shred -u src.zip 2>/dev/null || rm -f src.zip
+          fi
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: ${{ github.event.inputs.jdk || '21' }}
+      - uses: gradle/actions/setup-gradle@v5
+        if: ${{ hashFiles('settings.gradle', 'settings.gradle.kts', 'build.gradle', 'build.gradle.kts') != '' }}
+        with:
+          gradle-version: ${{ github.event.inputs.gradle || '9.8.2' }}
+      - uses: actions/cache@v6
+        with:
+          path: ~/.android/debug.keystore
+          key: debug-keystore-v1
+      - name: Run build.sh
+        run: |
+          if [ ! -f build.sh ]; then echo "build.sh is missing in the project root"; exit 1; fi
+          mkdir -p cloudide-out
+          export OUT="$PWD/cloudide-out"
+          export NDK="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_ROOT}"
+          export NDKBIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          bash build.sh
+      - name: Encrypt outputs (only when secret OUTPUT_PASSPHRASE is set)
+        env:
+          OUTPUT_PASSPHRASE: ${{ secrets.OUTPUT_PASSPHRASE }}
+        run: |
+          [ -n "$OUTPUT_PASSPHRASE" ] || exit 0
+          find . -type f \( -path '*/build/outputs/*' -o -path './build/app/outputs/flutter-apk/*' -o -path './cloudide-out/*' -o -path './dist/*' \) \
+            ! -name '*.enc' ! -name '*.txt' -print0 | while IFS= read -r -d '' f; do
+            openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass env:OUTPUT_PASSPHRASE -in "$f" -out "$f.enc" && rm -f "$f"
+          done
+      - uses: actions/upload-artifact@v7
+        with:
+          name: output
+          path: |
+            ${{ github.event.inputs.artifact || 'cloudide-out/**' }}
+            **/*.enc
+            !src.zip.enc
+          if-no-files-found: warn
+          retention-days: 1

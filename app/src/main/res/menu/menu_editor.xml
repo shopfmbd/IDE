@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Toolbar: the five things used all the time. The three-dot menu has six entries; every group opens its own short list:
+  AI, build and GitHub, edit text, files and view, then project and app settings.
+-->
+<menu xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+    <item android:id="@+id/m_save" android:icon="@drawable/ic_save" android:title="@string/save" app:showAsAction="ifRoom"/>
+    <item android:id="@+id/m_undo" android:icon="@drawable/ic_undo" android:title="@string/undo" app:showAsAction="ifRoom"/>
+    <item android:id="@+id/m_redo" android:icon="@drawable/ic_redo" android:title="@string/redo" app:showAsAction="ifRoom"/>
+    <item android:id="@+id/m_find" android:icon="@drawable/ic_search" android:title="@string/find_and_replace" app:showAsAction="ifRoom"/>
+    <item android:id="@+id/m_build" android:icon="@drawable/ic_play" android:title="@string/build" app:showAsAction="always"/>
+
+    <item android:id="@+id/m_palette" android:title="@string/command_palette" app:showAsAction="never"/>
+
+    <item android:id="@+id/m_grp_ai" android:title="@string/ai_assistant" app:showAsAction="never">
+        <menu>
+            <item android:id="@+id/m_ai_open" android:title="@string/ai_open"/>
+            <item android:id="@+id/m_ai_web" android:title="@string/ai_web"/>
+            <item android:id="@+id/m_ai_project" android:title="@string/ai_project_ask"/>
+            <item android:id="@+id/m_ai_review" android:title="@string/ai_project_review"/>
+            <item android:id="@+id/m_ai_explain" android:title="@string/ai_explain"/>
+            <item android:id="@+id/m_ai_fix" android:title="@string/ai_fix"/>
+            <item android:id="@+id/m_ai_refactor" android:title="@string/ai_refactor"/>
+            <item android:id="@+id/m_ai_tests" android:title="@string/ai_tests"/>
+            <item android:id="@+id/m_ai_docs" android:title="@string/ai_docs"/>
+            <item android:id="@+id/m_ai_mode" android:title="@string/ai_mode"/>
+            <item android:id="@+id/m_ai_settings" android:title="@string/ai_settings"/>
+        </menu>
+    </item>
+
+    <item android:id="@+id/m_grp_build" android:title="@string/build_and_github" app:showAsAction="never">
+        <menu>
+            <item android:id="@+id/m_install" android:title="@string/install_the_last_apk"/>
+            <item android:id="@+id/m_getfiles" android:title="@string/last_apk_save_share"/>
+            <item android:id="@+id/m_outputs" android:title="@string/all_build_files"/>
+            <item android:id="@+id/m_task" android:title="@string/build_with_a_chosen"/>
+            <item android:id="@+id/m_history" android:title="@string/build_history_github_runs"/>
+            <item android:id="@+id/m_push" android:title="@string/upload_code_only_no"/>
+            <item android:id="@+id/m_pull" android:title="@string/download_latest_from_github"/>
+            <item android:id="@+id/m_repo" android:title="@string/open_repository_in_browser"/>
+            <item android:id="@+id/m_wf" android:title="@string/reset_the_github_build"/>
+        </menu>
+    </item>
+
+    <item android:id="@+id/m_edit" android:title="@string/edit_text" app:showAsAction="never">
+        <menu>
+            <item android:id="@+id/m_goto" android:title="@string/go_to_line"/>
+            <item android:id="@+id/m_comment" android:title="@string/comment_or_uncomment"/>
+            <item android:id="@+id/m_dup" android:title="@string/duplicate_line"/>
+            <item android:id="@+id/m_del" android:title="@string/delete_line"/>
+            <item android:id="@+id/m_up" android:title="@string/move_line_up"/>
+            <item android:id="@+id/m_down" android:title="@string/move_line_down"/>
+            <item android:id="@+id/m_indent" android:title="@string/indent"/>
+            <item android:id="@+id/m_outdent" android:title="@string/unindent"/>
+            <item android:id="@+id/m_format" android:title="@string/tidy_up_code_format"/>
+        </menu>
+    </item>
+
+    <item android:id="@+id/m_grp_files" android:title="@string/files_and_view" app:showAsAction="never">
+        <menu>
+            <item android:id="@+id/m_quick" android:title="@string/open_a_file_by"/>
+            <item android:id="@+id/m_search" android:title="@string/search_text_in_all"/>
+            <item android:id="@+id/m_saveall" android:title="@string/save_all_files"/>
+            <item android:id="@+id/m_log" android:title="@string/problems_and_build_log"/>
+            <item android:id="@+id/m_term" android:title="@string/terminal"/>
+            <item android:id="@+id/m_wrap" android:title="@string/word_wrap_on_off"/>
+            <item android:id="@+id/m_applog" android:title="@string/app_log_and_diagnostics"/>
+        </menu>
+    </item>
+
+    <item android:id="@+id/m_view" android:title="@string/project_menu" app:showAsAction="never">
+        <menu>
+            <item android:id="@+id/m_psettings" android:title="@string/project_settings"/>
+            <item android:id="@+id/m_settings" android:title="@string/app_settings"/>
+            <item android:id="@+id/m_close" android:title="@string/close_project"/>
+        </menu>
+    </item>
+</menu>

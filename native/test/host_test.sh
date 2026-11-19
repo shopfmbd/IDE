@@ -7,7 +7,8 @@ bash "$here/build.sh" host >/dev/null || exit 1
 B="$here/build-host"
 T="$(mktemp -d)"; P="$T/usr"; mkdir -p "$P/bin" "$P/lib"
 LD=/lib64/ld-linux-x86-64.so.2; [ -e "$LD" ] || LD=$(ls /lib*/ld-linux-x86-64.so.2 /lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 2>/dev/null | head -1)
-cp /bin/echo "$P/bin/echo"; cp "$(command -v python3)" "$P/bin/python"; cp "$(command -v sh)" "$P/bin/sh"
+printf '#include <stdio.h>\nint main(int c,char**v){for(int i=1;i<c;i++)printf("%%s%%s",v[i],i+1<c?" ":"");return puts(""),0;}\n' > "$T/e.c"; gcc -o "$P/bin/echo" "$T/e.c"   # a real program, not a multi-call coreutils binary (uutils on newer Ubuntu refuses other names)
+cp "$(command -v python3)" "$P/bin/python"; cp "$(command -v sh)" "$P/bin/sh"
 cp "$(command -v env)" "$P/bin/env"; cp "$(command -v cat)" "$P/bin/cat"
 ln -s echo "$P/bin/echo-link"
 printf '#!%s/bin/sh\n%s/bin/echo "script ran: $1"\n' "$P" "$P" > "$P/bin/hello.sh"

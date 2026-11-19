@@ -1,0 +1,339 @@
+name: Build language packs
+# Produces the one-time downloads for CloudIDE > Settings > Language packs and publishes them next to
+# toolchain-arm64.zip in the "toolchain" release:
+#   pack-kotlin.zip   kotlinc as dex (runs inside the app, any Android version)         ~ minutes
+#   pack-clang.zip    clang, lld, make, cmake, ninja                                     ~ hours
+#   pack-go.zip       go                                                                 ~ 1 hour
+#   pack-python.zip   python 3 + pip                                                     ~ 1 hour
+#   pack-node.zip     node + npm                                                         ~ 1-2 hours
+#   pack-rust.zip     rustc + cargo                                                      ~ 4+ hours, may need a bigger runner
+#   pack-<id>.zip     every other language in app/src/main/assets/plugins/catalog.json that has a "termux" field
+#                     (ruby, php, lua, perl, zig, nim, dlang, ocaml, dart, erlang, elixir, jdk). Adding a language = one JSON entry.
+#   packs.json        sizes and SHA-256 sums the app checks after downloading
+#   plugins.json      the catalog itself, so the app learns new languages (Settings > Update the language list)
+#
+# The native packs are built from termux-packages with this app's package name as the prefix
+# (/data/data/com.fahim.cloudide/files/usr), so they do not depend on the Termux app. This workflow has not been
+# run yet. If a native job fails, its log names the step; the Kotlin pack and the rest are independent jobs.
+on:
+  workflow_dispatch:
+    inputs:
+      packs:
+        description: 'Comma separated ids from plugins/catalog.json (kotlin is the in-app pack, the rest are native), or "all"'
+        default: 'kotlin,clang,go,python,node'
+      runner:
+        description: 'Runner label for the native jobs (use a larger runner for rust)'
+        default: 'ubuntu-latest'
+      kotlin:
+        description: 'Kotlin compiler version: "stable" (newest x.y.z release, default), "latest" (newest upload, may be a Beta/RC) or an exact version such as 2.4.21'
+        default: 'stable'
+permissions:
+  contents: write
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      native: ${{ steps.m.outputs.native }}
+      kotlin: ${{ steps.m.outputs.kotlin }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: m
+        run: |
+          python3 - <<'PY'
+          import json, os
+          want = [x.strip() for x in "${{ github.event.inputs.packs }}".split(',') if x.strip()]
+          cat = json.load(open('app/src/main/assets/plugins/catalog.json'))['plugins']
+          native = [p['id'] for p in cat if p.get('kind') == 'native' and p.get('termux') and ('all' in want or p['id'] in want)]
+          # a plugin that requires another one is built together with it only if asked: say so
+          ids = {p['id'] for p in cat}
+          for p in cat:
+              if p['id'] in native:
+                  for r in p.get('requires', []):
+                      if r not in native and r in ids:
+                          print(f"::notice::{p['id']} needs {r}; build {r} too if it is not published yet")
+          kotlin = 'all' in want or 'kotlin' in want
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as o:
+              o.write('native=' + json.dumps(native) + '\n')
+              o.write('kotlin=' + ('true' if kotlin else 'false') + '\n')
+          PY
+
+  kotlin:
+    needs: plan
+    if: needs.plan.outputs.kotlin == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Resolve kotlinc and everything it needs
+        run: |
+          set -e
+          mkdir -p w/libs out && cd w
+          WANT='${{ github.event.inputs.kotlin }}'; WANT=${WANT:-stable}
+          META=$(curl -fsSL https://repo1.maven.org/maven2/org/jetbrains/kotlin/kotlin-compiler-embeddable/maven-metadata.xml)
+          case "$WANT" in
+            stable) K=$(echo "$META" | sed -n 's:.*<version>\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)</version>.*:\1:p' | sort -V | tail -1) ;;
+            latest) K=$(echo "$META" | sed -n 's:.*<release>\(.*\)</release>.*:\1:p' | head -1) ;;
+            *)      K=$WANT ;;
+          esac
+          test -n "$K" || { echo "could not pick a Kotlin version"; exit 1; }
+          echo "kotlin $K"
+          cat > pom.xml <<POM
+          <project xmlns="http://maven.apache.org/POM/4.0.0"><modelVersion>4.0.0</modelVersion>
+            <groupId>x</groupId><artifactId>x</artifactId><version>1</version>
+            <dependencies>
+              <dependency><groupId>org.jetbrains.kotlin</groupId><artifactId>kotlin-compiler-embeddable</artifactId><version>$K</version></dependency>
+              <dependency><groupId>org.jetbrains.kotlin</groupId><artifactId>kotlin-stdlib</artifactId><version>$K</version></dependency>
+              <dependency><groupId>org.jetbrains.intellij.deps</groupId><artifactId>trove4j</artifactId><version>1.0.20200330</version></dependency>
+            </dependencies></project>
+          POM
+          mvn -q -B dependency:copy-dependencies -DoutputDirectory=libs
+          ls -l libs
+          # kotlinc's IntelliJ code uses gnu.trove (FileUtil); fail here instead of on the phone if it is not among the jars
+          ls libs | grep -qi trove4j || { echo "trove4j missing from libs"; exit 1; }
+          cp libs/kotlin-stdlib-$K.jar ../out/kotlin-stdlib.jar
+          # The Compose compiler is a Kotlin compiler plugin. Without it a Compose project fails in code generation
+          # ("Exception while generating code for ... remember"). Kept out of libs/ on purpose, see "Dex the compiler".
+          mkdir -p plugin
+          mvn -q -B dependency:copy -Dartifact=org.jetbrains.kotlin:kotlin-compose-compiler-plugin-embeddable:$K -DoutputDirectory=plugin
+          ls -l plugin
+          ls plugin | grep -q kotlin-compose-compiler-plugin-embeddable
+          echo "Kotlin $K" > ../out/KOTLIN_VERSION.txt
+      - name: D8 and android.jar
+        run: |
+          set -e
+          cd w
+          R8=$(curl -fsSL https://dl.google.com/android/maven2/com/android/tools/r8/maven-metadata.xml | sed -n 's:.*<release>\(.*\)</release>.*:\1:p' | head -1)
+          curl -fsSL -o r8.jar "https://dl.google.com/android/maven2/com/android/tools/r8/$R8/r8-$R8.jar"
+          # API 37+ is published as android-37.0 (not android-37); try both names
+          for id in android-37.0 android-37; do
+            [ -d "$ANDROID_HOME/platforms/$id" ] || { yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;$id" >/dev/null 2>&1 || true; }
+            [ -d "$ANDROID_HOME/platforms/$id" ] && break
+          done || true
+          P=$(ls "$ANDROID_HOME/platforms" | sort -V | tail -1)
+          cp "$ANDROID_HOME/platforms/$P/android.jar" android.jar
+      - name: Stand-ins for what Android lacks (java.lang.management, javax.*)
+        run: |
+          set -e
+          cd w
+          # java.lang.management / com.sun.management: Android has neither and a dex cannot hold java.* classes, so the
+          # references are renamed to cloudide.shim.mgmt / cloudide.shim.sunmgmt (toolchain/patch_platform.py).
+          mkdir -p shim && javac -d shim --release 8 $(find ../toolchain/src/cloudide/shim -name '*.java' ! -name Unsafe.java)
+          # Unsafe.java wraps sun.misc.Unsafe, which "--release 8" cannot see, so it is compiled with -source/-target instead.
+          javac -nowarn -source 8 -target 8 -cp shim -d shim ../toolchain/src/cloudide/shim/Unsafe.java 2>&1 | grep -v -i 'warning\|^\s' || true
+          test -f shim/cloudide/shim/Unsafe.class
+          (cd shim && zip -qr ../kshim.jar .)
+          # javax.lang.model / javax.tools / javax.annotation.processing: kotlinc loads them (SourceVersion, ...), Android lacks them.
+          "$JAVA_HOME/bin/jmod" extract --dir jc "$JAVA_HOME/jmods/java.compiler.jmod"
+          rm -f jc/classes/module-info.class
+          (cd jc/classes && zip -qr ../../javax-stubs.jar .)
+          mkdir -p patched
+          for j in libs/*.jar javax-stubs.jar plugin/*.jar; do
+            b=$(basename "$j" .jar)
+            python3 ../toolchain/patch_java9.py "$j" "patched/$b.1.jar"
+            python3 ../toolchain/patch_platform.py "patched/$b.1.jar" "patched/$b.jar"
+            rm "patched/$b.1.jar"
+          done
+          python3 ../toolchain/patch_java9.py --check patched/*.jar
+          python3 ../toolchain/patch_platform.py --check patched/*.jar
+      - name: Report platform classes still missing (informational)
+        run: |
+          set -e
+          cd w
+          # A missing class shows up on the phone as NoClassDefFoundError one at a time. This lists them all at once:
+          # every java/ or javax/ class kotlinc references that android.jar, the stand-ins and the javax stubs do not provide.
+          mkdir -p scan && cd scan
+          for j in ../patched/kotlin-compiler-embeddable-*.jar; do
+            python3 ../../toolchain/patch_platform.py --scan ../android.jar "$j" ../kshim.jar ../patched/*.jar | tee -a ../missing.txt
+          done
+          echo '--- missing platform classes ---' && cat ../missing.txt | head -80
+      - name: Report classes defined nowhere (informational)
+        run: |
+          cd w
+          for j in patched/kotlin-compiler-embeddable-*.jar; do
+            python3 ../toolchain/scan_missing.py android.jar "$j" kshim.jar $(ls patched/*.jar | grep -v "$j") | head -60
+          done
+      - name: Describe IntelliJ's Unsafe wrapper (informational)
+        run: |
+          cd w
+          # kotlinc failed on a phone with NoSuchMethodException getAndAddInt inside this class. Print what it does,
+          # so the next fix is based on the real code and not on a guess.
+          mkdir -p ju && cd ju
+          unzip -qo ../patched/kotlin-compiler-embeddable-*.jar 'org/jetbrains/kotlin/com/intellij/util/containers/Unsafe*.class' || true
+          for f in $(find . -name 'Unsafe*.class'); do
+            echo "=== $f"; javap -p -c -constants "$f" | head -250
+          done
+          echo "=== does the patched wrapper point at cloudide/shim/Unsafe now?"
+          for f in $(find . -name 'Unsafe*.class'); do echo -n "$f: "; grep -c 'cloudide/shim/Unsafe\|cloudide.shim.Unsafe' "$f" || true; done
+          echo "=== FastJarFileSystem (printed the 'mapped buffer unmapping' warning): does it use the shim's invokeCleaner now?"
+          unzip -qo ../patched/kotlin-compiler-embeddable-*.jar 'org/jetbrains/kotlin/cli/jvm/compiler/jarfs/*' || true
+          for f in $(find org/jetbrains/kotlin/cli/jvm/compiler/jarfs -name 'FastJar*.class' 2>/dev/null); do
+            echo -n "$f shim refs: "; grep -c 'cloudide/shim/Unsafe\|cloudide.shim.Unsafe' "$f" || true
+          done
+          javap -p -c org/jetbrains/kotlin/cli/jvm/compiler/jarfs/FastJarFileSystem*.class 2>/dev/null | grep -n 'invokeCleaner\|Unsafe' | head -20 || true
+          echo "=== classes that mention sun/misc/Unsafe or jdk/internal/misc/Unsafe"
+          unzip -Z1 ../patched/kotlin-compiler-embeddable-*.jar | grep -c '\.class$' || true
+          mkdir -p all && cd all && unzip -qo ../../patched/kotlin-compiler-embeddable-*.jar 'org/*' && grep -rlE 'sun/misc/Unsafe|jdk/internal/misc/Unsafe' . | head -40 || true
+      - name: Describe the failing light-tree check (informational)
+        run: |
+          cd w
+          # On a phone kotlinc stops with a bare java.lang.Exception at TreeRawFirDeclarationBuilderProxy.convertFile(:173).
+          # Print that method's bytecode and, if the sources jar can be had, the source lines around it.
+          K=$(sed 's/Kotlin //' ../out/KOTLIN_VERSION.txt | head -1); echo "kotlin $K"
+          mkdir -p jc && cd jc
+          unzip -qo ../patched/kotlin-compiler-embeddable-*.jar 'org/jetbrains/kotlin/fir/lightTree/converter/TreeRawFirDeclarationBuilderProxy*.class' || true
+          javap -p -c -constants -l org/jetbrains/kotlin/fir/lightTree/converter/TreeRawFirDeclarationBuilderProxy.class \
+            | awk '/ convertFile\(/{p=1} p{print} p&&/^$/{exit}' | head -220 || true
+          curl -fsSL -o src.jar "https://repo1.maven.org/maven2/org/jetbrains/kotlin/kotlin-compiler-embeddable/$K/kotlin-compiler-embeddable-$K-sources.jar" \
+            && unzip -p src.jar 'org/jetbrains/kotlin/fir/lightTree/converter/TreeRawFirDeclarationBuilderProxy.kt' | sed -n '150,190p' || echo "(no sources jar)"
+      - name: Dex the compiler
+        run: |
+          set -e
+          cd w
+          # inputs: every Kotlin jar and library (patched), the javax stubs and the shim classes
+          java -cp r8.jar com.android.tools.r8.D8 --release --min-api 26 --lib android.jar --output ../out/kotlinc.dex.jar \
+            patched/*.jar kshim.jar 2>&1 | tail -n 30 || true
+          test -s ../out/kotlinc.dex.jar
+          # D8 drops non-class files (service files, builtins, message bundles). Put them back.
+          python3 - <<'PY'
+          import zipfile, shutil, os, glob
+          dex = '../out/kotlinc.dex.jar'
+          tmp = dex + '.tmp'
+          with zipfile.ZipFile(dex) as z: have = set(z.namelist())
+          shutil.copy(dex, tmp)
+          with zipfile.ZipFile(tmp, 'a', zipfile.ZIP_DEFLATED) as out:
+              for s in sorted(glob.glob('libs/*.jar')):
+                  with zipfile.ZipFile(s) as zs:
+                      for n in zs.namelist():
+                          if n.endswith('/') or n.endswith('.class') or n in have or n == 'module-info.class': continue
+                          if n.startswith('META-INF/') and n.rsplit('.',1)[-1].upper() in ('SF','RSA','DSA','EC','MF'): continue
+                          if n.startswith('META-INF/versions/'): continue
+                          out.writestr(n, zs.read(n)); have.add(n)
+          os.replace(tmp, dex)
+          PY
+          unzip -l ../out/kotlinc.dex.jar | grep -c 'META-INF/services' || true
+          # The Compose plugin's classes are inside kotlinc.dex.jar (patched/ holds them) but its service files are not (only
+          # libs/*.jar are put back above). They go into a tiny jar the app passes as -Xplugin for projects that use Compose:
+          # kotlinc finds the registrar names in that jar and loads the classes from the compiler's own dex class loader.
+          python3 - <<'PY'
+          import zipfile, glob
+          src = glob.glob('plugin/kotlin-compose-compiler-plugin-embeddable-*.jar')[0]
+          with zipfile.ZipFile(src) as z, zipfile.ZipFile('../out/compose-plugin.jar', 'w', zipfile.ZIP_DEFLATED) as o:
+              names = [n for n in z.namelist() if n.startswith('META-INF/services/') and not n.endswith('/')]
+              assert names, 'no service files in the Compose plugin jar'
+              for n in names:
+                  data = z.read(n); o.writestr(n, data); print('compose plugin service', n, '->', data.decode().strip())
+          with zipfile.ZipFile('../out/kotlinc.dex.jar') as d:
+              dup = [n for n in d.namelist() if n.startswith('META-INF/services/') and 'CompilerPluginRegistrar' in n]
+              print('plugin registrar service files inside kotlinc.dex.jar (must be none):', dup)
+              assert not dup
+          PY
+          # fail the build if the dexed compiler still names the packages Android lacks
+          python3 ../toolchain/patch_platform.py --check ../out/kotlinc.dex.jar
+          python3 ../toolchain/patch_java9.py --check ../out/kotlinc.dex.jar
+          echo 'mgmt-shim 1' >> ../out/KOTLIN_VERSION.txt
+          echo 'unsafe-shim 2' >> ../out/KOTLIN_VERSION.txt
+          echo 'compose-plugin 1' >> ../out/KOTLIN_VERSION.txt
+      - name: Zip
+        run: |
+          cd out && zip -q ../pack-kotlin.zip kotlinc.dex.jar kotlin-stdlib.jar compose-plugin.jar KOTLIN_VERSION.txt && ls -l ../pack-kotlin.zip
+      - uses: actions/upload-artifact@v7
+        with:
+          name: pack-kotlin
+          path: pack-kotlin.zip
+
+  native:
+    needs: plan
+    if: needs.plan.outputs.native != '[]'
+    runs-on: ${{ github.event.inputs.runner }}
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        pack: ${{ fromJSON(needs.plan.outputs.native) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: app-src
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          df -h /
+      - name: Get termux-packages and give it this app's package name
+        run: |
+          set -e
+          git clone --depth 1 https://github.com/termux/termux-packages tp
+          cd tp
+          # The package name becomes part of the prefix every binary is built for.
+          sed -i 's/^TERMUX_APP__PACKAGE_NAME=.*/TERMUX_APP__PACKAGE_NAME="com.fahim.cloudide"/' scripts/properties.sh
+          sed -i 's/^TERMUX_APP_PACKAGE=.*/TERMUX_APP_PACKAGE="com.fahim.cloudide"/' scripts/properties.sh
+          grep -n 'com.fahim.cloudide' scripts/properties.sh || { echo 'Could not set the package name: scripts/properties.sh changed upstream. Edit this step.'; exit 1; }
+      - name: Build the packages (dependencies are built too)
+        working-directory: tp
+        run: |
+          set -e
+          PK=$(python3 - <<'PY'
+          import json
+          cat = json.load(open('../app-src/app/src/main/assets/plugins/catalog.json'))['plugins']
+          print(next(p['termux'] for p in cat if p['id'] == "${{ matrix.pack }}"))
+          PY
+          )
+          echo "building termux packages: $PK"
+          ./scripts/run-docker.sh ./build-package.sh -a aarch64 $PK
+          ls -l output
+      - name: Repack as pack-${{ matrix.pack }}.zip
+        run: |
+          set -e
+          mkdir stage && cd stage
+          for d in ../tp/output/*aarch64.deb ../tp/output/*all.deb; do [ -f "$d" ] && dpkg-deb -x "$d" . ; done
+          P=data/data/com.fahim.cloudide/files/usr
+          test -d "$P" || { echo "No $P in the packages: the prefix was not changed"; find . -maxdepth 4 -type d | head; exit 1; }
+          mkdir ../root && mv "$P" ../root/usr && cd ../root
+          rm -rf usr/share/man usr/share/doc usr/share/info usr/var usr/etc/apt usr/lib/apt usr/include/c++/v1/experimental 2>/dev/null || true
+          # a zip cannot hold links the way Android needs them: list them, the app recreates them
+          : > usr/LINKS.txt
+          find usr -type l | while read -r l; do printf '%s\t%s\n' "${l#usr/}" "$(readlink "$l")" >> usr/LINKS.txt; rm "$l"; done
+          wc -l usr/LINKS.txt
+          zip -qr9 ../pack-${{ matrix.pack }}.zip usr
+          ls -l ../pack-${{ matrix.pack }}.zip
+      - uses: actions/upload-artifact@v7
+        with:
+          name: pack-${{ matrix.pack }}
+          path: pack-${{ matrix.pack }}.zip
+
+  publish:
+    needs: [kotlin, native]
+    if: ${{ always() && (needs.kotlin.result == 'success' || needs.native.result == 'success') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: pack-*
+          merge-multiple: true
+          path: dist
+      - name: packs.json and release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -e
+          cd dist && ls -l
+          gh release view toolchain >/dev/null 2>&1 || gh release create toolchain --title "On-device toolchain" --notes "Built by toolchain.yml and packs.yml. Used by CloudIDE > Settings."
+          mkdir -p old && gh release download toolchain -p packs.json -D old 2>/dev/null || true
+          python3 - <<'PY'
+          import json, hashlib, os, glob, datetime
+          try: data = json.load(open('old/packs.json'))
+          except Exception: data = {'packs': {}}
+          for f in sorted(glob.glob('pack-*.zip')):
+              pid = f[5:-4]
+              h = hashlib.sha256(open(f,'rb').read()).hexdigest()
+              data['packs'][pid] = {'sha256': h, 'size': os.path.getsize(f), 'version': datetime.date.today().isoformat()}
+          json.dump(data, open('packs.json','w'), indent=1)
+          print(json.dumps(data, indent=1))
+          PY
+          cp ../app/src/main/assets/plugins/catalog.json plugins.json
+          gh release upload toolchain pack-*.zip packs.json plugins.json --clobber

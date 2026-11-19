@@ -1,0 +1,166 @@
+name: Build on-device toolchain
+# Produces toolchain-arm64.zip for CloudIDE > Settings > Local build.
+# Run once (Actions > Build on-device toolchain > Run workflow), then either
+#  - let the app download the release asset, or
+#  - download the artifact and import the zip in the app.
+on:
+  workflow_dispatch:
+    inputs:
+      aapt2_url:
+        description: 'Direct URL of a zip or file holding an Android arm64 aapt2 (leave empty to try the default source)'
+        default: ''
+      platform:
+        description: 'android.jar platform folder, for example android-35 (empty = newest on the runner)'
+        default: ''
+permissions:
+  contents: write
+jobs:
+  toolchain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Download ECJ (latest), R8 and apksig (latest)
+        run: |
+          set -e
+          mkdir -p w out && cd w
+          latest() { curl -fsSL "$1/maven-metadata.xml" | sed -n 's:.*<release>\(.*\)</release>.*:\1:p' | head -1; }
+          ECJ=$(latest https://repo1.maven.org/maven2/org/eclipse/jdt/ecj)
+          R8=$(latest https://dl.google.com/android/maven2/com/android/tools/r8)
+          SIG=$(latest https://dl.google.com/android/maven2/com/android/tools/build/apksig)
+          echo "ecj $ECJ  r8 $R8  apksig $SIG"
+          curl -fsSL -o ecj.jar    "https://repo1.maven.org/maven2/org/eclipse/jdt/ecj/$ECJ/ecj-$ECJ.jar"
+          curl -fsSL -o r8.jar     "https://dl.google.com/android/maven2/com/android/tools/r8/$R8/r8-$R8.jar"
+          curl -fsSL -o apksig.jar "https://dl.google.com/android/maven2/com/android/tools/build/apksig/$SIG/apksig-$SIG.jar"
+          printf 'ECJ %s\nR8/D8 %s\napksig %s\njava9-shim 2\n' "$ECJ" "$R8" "$SIG" > ../out/VERSIONS.txt
+      - name: android.jar
+        run: |
+          set -e
+          P="${{ github.event.inputs.platform }}"
+          # API 37+ is published as android-37.0 (not android-37); try both names
+          for id in android-37.0 android-37; do
+            [ -d "$ANDROID_HOME/platforms/$id" ] || { yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;$id" >/dev/null 2>&1 || true; }
+            [ -d "$ANDROID_HOME/platforms/$id" ] && break
+          done || true
+          [ -z "$P" ] && P=$(ls "$ANDROID_HOME/platforms" | sort -V | tail -1)
+          cp "$ANDROID_HOME/platforms/$P/android.jar" out/android.jar
+          echo "$P" >> out/VERSIONS.txt
+      - name: javax stubs (the part Android lacks)
+        run: |
+          set -e
+          cd w
+          # java.compiler = javax.lang.model, javax.annotation.processing, javax.tools. ECJ links against them.
+          "$JAVA_HOME/bin/jmod" extract --dir jc "$JAVA_HOME/jmods/java.compiler.jmod"
+          rm -f jc/classes/module-info.class
+          (cd jc/classes && zip -qr ../../javax-stubs.jar .)
+          unzip -l javax-stubs.jar | grep -c 'javax/tools/' 
+      - name: JDK 21 class stubs (the part android.jar lacks)
+        run: |
+          set -e
+          cd w
+          JH="$JAVA_HOME"
+          # jdk-stubs.jar: Java 9-21 platform classes that android.jar lacks (Record, MatchException, runtime.ObjectMethods,
+          # SwitchBootstraps, StringConcatFactory, java.lang.constant ...). ECJ at Java 9+ reads them for records, switch patterns
+          # and string concatenation. Only classes android.jar does NOT have are taken, so nothing in android.jar is shadowed.
+          # They are compile-time only: D8 desugars the uses, and the jar is never given to D8.
+          "$JH/bin/jmod" extract --dir jb "$JH/jmods/java.base.jmod"
+          unzip -Z1 ../out/android.jar | sort -u > have.txt
+          ( cd jb/classes && find java/lang/Record.class java/lang/MatchException.class java/lang/runtime java/lang/constant \
+              java/lang/invoke/StringConcatFactory.class java/lang/invoke/StringConcatException.class java/lang/invoke/TypeDescriptor*.class java/lang/Enum\$EnumDesc.class \
+              java/lang/invoke/LambdaMetafactory.class java/lang/invoke/LambdaConversionException.class java/lang/invoke/SerializedLambda.class \
+              java/util/SequencedCollection.class java/util/SequencedMap.class java/util/SequencedSet.class \
+              -name '*.class' 2>/dev/null | sort -u ) > want.txt
+          grep -vxFf have.txt want.txt > take.txt || true
+          echo "jdk-stubs: $(wc -l < take.txt) classes android.jar lacks"
+          if [ -s take.txt ]; then (cd jb/classes && zip -q ../../jdk-stubs.jar -@ < ../../take.txt); else echo 'android.jar already has everything' > NOTE.txt && zip -q jdk-stubs.jar NOTE.txt; fi
+          cp jdk-stubs.jar ../out/jdk-stubs.jar
+      - name: Build SignMain
+        run: |
+          set -e
+          cd w
+          mkdir -p sm && javac -d sm -cp apksig.jar --release 17 ../toolchain/src/cloudide/sign/SignMain.java
+          (cd sm && zip -qr ../signmain.jar .)
+      - name: Patch Runtime.version() (Android lacks Java 9 Runtime.Version)
+        run: |
+          set -e
+          cd w
+          mkdir -p shim && javac -d shim --release 8 ../toolchain/src/cloudide/shim/RtVersion.java
+          (cd shim && zip -qr ../rtshim.jar .)
+          for j in ecj r8 apksig javax-stubs; do
+            python3 ../toolchain/patch_java9.py $j.jar $j.patched.jar && mv $j.patched.jar $j.jar
+          done
+          python3 ../toolchain/patch_java9.py --check ecj.jar r8.jar apksig.jar javax-stubs.jar
+      - name: Dex everything with D8
+        run: |
+          set -e
+          cd w
+          dex() { # out.jar inputs...
+            o=$1; shift
+            java -cp r8.jar com.android.tools.r8.D8 --release --min-api 26 --lib ../out/android.jar --output "$o" "$@" 2>&1 | tail -n 30 || true
+            test -s "$o"
+          }
+          dex ../out/ecj.dex.jar  ecj.jar javax-stubs.jar rtshim.jar
+          dex ../out/d8.dex.jar   r8.jar rtshim.jar
+          dex ../out/sign.dex.jar signmain.jar apksig.jar rtshim.jar
+          # D8 drops non-class files (ECJ message bundles). Put them back.
+          python3 - <<'PY'
+          import zipfile, shutil, os
+          def merge(dex, *srcs):
+              tmp = dex + '.tmp'
+              with zipfile.ZipFile(dex) as z: have = set(z.namelist())
+              shutil.copy(dex, tmp)
+              with zipfile.ZipFile(tmp, 'a', zipfile.ZIP_DEFLATED) as out:
+                  for s in srcs:
+                      with zipfile.ZipFile(s) as zs:
+                          for n in zs.namelist():
+                              if n.endswith('/') or n.endswith('.class') or n in have: continue
+                              if n.startswith('META-INF/') and n.rsplit('.',1)[-1].upper() in ('SF','RSA','DSA','EC','MF'): continue
+                              if n == 'module-info.class': continue
+                              out.writestr(n, zs.read(n)); have.add(n)
+              os.replace(tmp, dex)
+          merge('../out/ecj.dex.jar', 'ecj.jar')
+          merge('../out/d8.dex.jar', 'r8.jar')
+          merge('../out/sign.dex.jar', 'apksig.jar')
+          PY
+          unzip -l ../out/ecj.dex.jar | grep -q 'classes.dex'
+          unzip -l ../out/ecj.dex.jar | grep -q '\.properties' || { echo 'ECJ message bundles missing'; exit 1; }
+          unzip -l ../out/ecj.dex.jar | grep -q 'javax' || echo 'note: javax classes are inside classes.dex'
+          python3 ../toolchain/patch_java9.py --check ../out/ecj.dex.jar ../out/d8.dex.jar ../out/sign.dex.jar
+      - name: aapt2 for Android arm64
+        env:
+          URL: ${{ github.event.inputs.aapt2_url }}
+        run: |
+          set -e
+          cd w && mkdir -p a && cd a
+          if [ -z "$URL" ]; then
+            # Default source: the static Android aarch64 SDK tool builds from lzhiyong/android-sdk-tools
+            URL=$(curl -fsSL https://api.github.com/repos/lzhiyong/android-sdk-tools/releases/latest \
+              | python3 -c "import sys,json; a=json.load(sys.stdin)['assets']; c=[x['browser_download_url'] for x in a if 'aarch64' in x['name'].lower() and x['name'].endswith('.zip')]; print(c[0] if c else '')")
+          fi
+          [ -n "$URL" ] || { echo 'No aapt2 source found. Re-run with the aapt2_url input.'; exit 1; }
+          echo "aapt2 from $URL"
+          curl -fsSL -o pkg "$URL"
+          if unzip -tq pkg >/dev/null 2>&1; then unzip -qo pkg; else cp pkg aapt2; fi
+          F=$(find . -type f \( -name aapt2 -o -name libaapt2.so \) | head -1)
+          [ -n "$F" ] || { echo 'aapt2 not found inside the download'; exit 1; }
+          file "$F"
+          file "$F" | grep -qi 'aarch64' || { echo 'That aapt2 is not an arm64 build'; exit 1; }
+          cp "$F" ../../out/aapt2
+      - name: Zip
+        run: |
+          cd out && ls -l && zip -q ../toolchain-arm64.zip * && ls -l ../toolchain-arm64.zip
+      - uses: actions/upload-artifact@v7
+        with:
+          name: toolchain-arm64
+          path: toolchain-arm64.zip
+      - name: Publish release asset (for the in-app download)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # keep the pack-*.zip assets that packs.yml put in the same release
+          gh release view toolchain >/dev/null 2>&1 || gh release create toolchain --title "On-device toolchain" --notes "Built by toolchain.yml and packs.yml. Used by CloudIDE > Settings."
+          gh release upload toolchain toolchain-arm64.zip --clobber

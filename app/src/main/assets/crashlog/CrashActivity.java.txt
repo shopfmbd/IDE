@@ -1,0 +1,99 @@
+package cloudide.crashlog;
+
+import android.app.Activity;
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.content.Context;
+import android.content.Intent;
+import android.graphics.Typeface;
+import android.os.Bundle;
+import android.view.View;
+import android.widget.Button;
+import android.widget.LinearLayout;
+import android.widget.ScrollView;
+import android.widget.TextView;
+import android.widget.Toast;
+
+/** Shows the stack trace of a crash of this app, in its own process, with Copy and Share. Added by Cloud IDE. */
+public final class CrashActivity extends Activity {
+    private String trace = "";
+
+    @Override
+    protected void onCreate(Bundle b) {
+        super.onCreate(b);
+        String t = getIntent().getStringExtra("trace");
+        if (t != null) trace = t;
+        float d = getResources().getDisplayMetrics().density;
+        int p = (int) (16 * d);
+
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setBackgroundColor(0xFFFFFFFF);
+        root.setFitsSystemWindows(true);
+
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(p, p, p, p);
+        root.addView(box, new LinearLayout.LayoutParams(-1, -1));
+
+        TextView title = new TextView(this);
+        title.setText("This app crashed");
+        title.setTextSize(20);
+        title.setTypeface(Typeface.DEFAULT_BOLD);
+        title.setTextColor(0xFFB00020);
+        box.addView(title);
+
+        TextView sub = new TextView(this);
+        sub.setText("Copy the text below and send it to whoever fixes the app.");
+        sub.setTextColor(0xFF444444);
+        sub.setPadding(0, (int) (4 * d), 0, (int) (8 * d));
+        box.addView(sub);
+
+        ScrollView sv = new ScrollView(this);
+        TextView tv = new TextView(this);
+        tv.setTypeface(Typeface.MONOSPACE);
+        tv.setTextSize(11);
+        tv.setTextColor(0xFF202020);
+        tv.setTextIsSelectable(true);
+        tv.setText(trace);
+        sv.addView(tv);
+        box.addView(sv, new LinearLayout.LayoutParams(-1, 0, 1f));
+
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        box.addView(row, new LinearLayout.LayoutParams(-1, -2));
+        row.addView(button("Copy", new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+                if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("crash", trace));
+                Toast.makeText(CrashActivity.this, "Copied", Toast.LENGTH_SHORT).show();
+            }
+        }), new LinearLayout.LayoutParams(0, -2, 1f));
+        row.addView(button("Share", new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                Intent s = new Intent(Intent.ACTION_SEND);
+                s.setType("text/plain");
+                s.putExtra(Intent.EXTRA_TEXT, trace);
+                startActivity(Intent.createChooser(s, "Share crash"));
+            }
+        }), new LinearLayout.LayoutParams(0, -2, 1f));
+        row.addView(button("Close", new View.OnClickListener() {
+            @Override public void onClick(View v) { finish(); }
+        }), new LinearLayout.LayoutParams(0, -2, 1f));
+
+        setContentView(root);
+    }
+
+    private Button button(String label, View.OnClickListener l) {
+        Button x = new Button(this);
+        x.setText(label);
+        x.setOnClickListener(l);
+        return x;
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        if (isFinishing()) android.os.Process.killProcess(android.os.Process.myPid());
+    }
+}

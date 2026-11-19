@@ -1,0 +1,92 @@
+package cloudide.crashlog;
+
+import android.content.ContentProvider;
+import android.content.ContentValues;
+import android.content.Context;
+import android.content.Intent;
+import android.database.Cursor;
+import android.net.Uri;
+import android.os.Build;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.PrintWriter;
+import java.io.StringWriter;
+import java.util.Date;
+
+/**
+ * Added by Cloud IDE to local debug builds. A ContentProvider is created before Application.onCreate, so the handler is
+ * in place even when the app dies while starting. On a crash it saves the stack trace and opens CrashActivity.
+ * Add an empty file named .nocrashlog to the project folder to build without it.
+ */
+public final class CrashLogProvider extends ContentProvider {
+    private static volatile boolean handling;
+
+    @Override
+    public boolean onCreate() {
+        final Context c = getContext();
+        if (c == null) return false;
+        final Context app = c.getApplicationContext() != null ? c.getApplicationContext() : c;
+        final Thread.UncaughtExceptionHandler prev = Thread.getDefaultUncaughtExceptionHandler();
+        Thread.setDefaultUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler() {
+            @Override
+            public void uncaughtException(Thread t, Throwable e) {
+                if (handling) {
+                    if (prev != null) prev.uncaughtException(t, e);
+                    return;
+                }
+                handling = true;
+                try {
+                    String text = describe(app, t, e);
+                    save(app, text);
+                    show(app, text);
+                    try { Thread.sleep(700); } catch (InterruptedException ignored) { }
+                } catch (Throwable failed) {
+                    if (prev != null) prev.uncaughtException(t, e);
+                    return;
+                }
+                android.os.Process.killProcess(android.os.Process.myPid());
+                System.exit(10);
+            }
+        });
+        return true;
+    }
+
+    static String describe(Context app, Thread t, Throwable e) {
+        StringWriter sw = new StringWriter();
+        PrintWriter pw = new PrintWriter(sw);
+        pw.println("App: " + app.getPackageName());
+        pw.println("Time: " + new Date());
+        pw.println("Thread: " + t.getName());
+        pw.println("Device: " + Build.MANUFACTURER + " " + Build.MODEL + ", Android " + Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + ")");
+        pw.println();
+        e.printStackTrace(pw);
+        pw.flush();
+        return sw.toString();
+    }
+
+    static void save(Context app, String text) {
+        try {
+            File dir = app.getExternalFilesDir(null);
+            if (dir == null) dir = app.getFilesDir();
+            FileOutputStream o = new FileOutputStream(new File(dir, "crash-last.txt"));
+            o.write(text.getBytes("UTF-8"));
+            o.close();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    static void show(Context app, String text) {
+        if (text.length() > 60000) text = text.substring(0, 60000) + "\n... (cut, the full text is in crash-last.txt)";
+        Intent i = new Intent();
+        i.setClassName(app.getPackageName(), "cloudide.crashlog.CrashActivity");
+        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+        i.putExtra("trace", text);
+        app.startActivity(i);
+    }
+
+    @Override public Cursor query(Uri u, String[] p, String s, String[] a, String o) { return null; }
+    @Override public String getType(Uri u) { return null; }
+    @Override public Uri insert(Uri u, ContentValues v) { return null; }
+    @Override public int delete(Uri u, String s, String[] a) { return 0; }
+    @Override public int update(Uri u, ContentValues v, String s, String[] a) { return 0; }
+}

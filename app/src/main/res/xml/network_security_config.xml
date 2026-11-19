@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  HTTPS everywhere. The one exception is a server on this device (for example a local model such as Ollama or LM Studio
+  running in Termux), which has no certificate to check. Servers elsewhere on your network must use https://.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false"/>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">localhost</domain>
+        <domain includeSubdomains="false">127.0.0.1</domain>
+    </domain-config>
+</network-security-config>

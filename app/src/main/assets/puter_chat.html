@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Puter chat</title>
+<style>
+  :root { color-scheme: light dark; --bg:#fff; --fg:#1b1b1f; --mut:#6b6b76; --card:#f1f1f5; --me:#d9e4ff; --accent:#2f5bea; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#121214; --fg:#e6e6ea; --mut:#9a9aa6; --card:#1e1e22; --me:#25335c; --accent:#7b9bff; } }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { display: flex; flex-direction: column; background: var(--bg); color: var(--fg); font: 15px/1.45 system-ui, sans-serif; }
+  header { padding: 8px 10px; background: var(--card); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  header input { flex: 1 1 140px; min-width: 0; padding: 7px 9px; border-radius: 8px; border: 1px solid var(--mut); background: var(--bg); color: var(--fg); }
+  button { padding: 8px 12px; border: 0; border-radius: 8px; background: var(--accent); color: #fff; font: inherit; }
+  button.alt { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+  button:disabled { opacity: .5; }
+  #status { padding: 4px 10px; font-size: 12px; color: var(--mut); }
+  #log { flex: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+  .m { max-width: 92%; padding: 8px 11px; border-radius: 12px; white-space: pre-wrap; word-wrap: break-word; background: var(--card); }
+  .m.me { align-self: flex-end; background: var(--me); }
+  .m.err { color: #d33; }
+  footer { display: flex; gap: 8px; padding: 8px 10px; background: var(--card); }
+  footer textarea { flex: 1; min-width: 0; resize: none; height: 44px; padding: 8px; border-radius: 8px; border: 1px solid var(--mut); background: var(--bg); color: var(--fg); font: inherit; }
+</style>
+</head>
+<body>
+<header>
+  <input id="model" list="models" value="claude-sonnet-5-5" aria-label="Model" autocapitalize="off" autocomplete="off" spellcheck="false">
+  <datalist id="models"></datalist>
+  <button id="signin" class="alt">Sign in</button>
+  <button id="clear" class="alt">New chat</button>
+</header>
+<div id="status">Loading Puter.js...</div>
+<div id="log"></div>
+<footer>
+  <textarea id="inp" placeholder="Message" rows="1"></textarea>
+  <button id="send" disabled>Send</button>
+</footer>
+
+<script src="https://js.puter.com/v2/"></script>
+<script>
+(function () {
+  var SAVED_TOKEN = /*TOKEN*/"";
+  var $ = function (id) { return document.getElementById(id); };
+  var log = $("log"), status = $("status"), sendBtn = $("send"), inp = $("inp");
+  var history = [];
+  var busy = false;
+
+  function setStatus(t) { status.textContent = t; }
+  function add(cls, text) {
+    var d = document.createElement("div");
+    d.className = "m " + cls;
+    d.textContent = text;           // textContent, never innerHTML: replies are untrusted text
+    log.appendChild(d);
+    log.scrollTop = log.scrollHeight;
+    return d;
+  }
+  function errText(e) {
+    if (!e) return "Unknown error";
+    if (typeof e === "string") return e;
+    return e.message || (e.error && (e.error.message || e.error)) || JSON.stringify(e);
+  }
+
+  function ready() { return typeof window.puter !== "undefined"; }
+
+  async function refreshUser() {
+    if (!ready()) return;
+    try {
+      if (SAVED_TOKEN && puter.setAuthToken) puter.setAuthToken(SAVED_TOKEN);
+    } catch (e) { /* the token is optional */ }
+    try {
+      var signed = puter.auth.isSignedIn();
+      if (signed) {
+        var u = await puter.auth.getUser();
+        setStatus("Signed in as " + (u && u.username ? u.username : "your Puter account"));
+        $("signin").textContent = "Sign out";
+      } else {
+        setStatus("Not signed in. Tap Sign in, or just send a message and Puter will ask you to sign in.");
+        $("signin").textContent = "Sign in";
+      }
+      sendBtn.disabled = false;
+    } catch (e) {
+      setStatus("Puter loaded, but the account check failed: " + errText(e));
+      sendBtn.disabled = false;
+    }
+  }
+
+  async function loadModels() {
+    try {
+      if (!puter.ai.listModels) return;
+      var list = await puter.ai.listModels();
+      var dl = $("models");
+      (list || []).forEach(function (m) {
+        var id = typeof m === "string" ? m : (m.id || m.name);
+        if (!id) return;
+        var o = document.createElement("option");
+        o.value = id;
+        dl.appendChild(o);
+      });
+    } catch (e) { /* the list is a convenience; typing a model still works */ }
+  }
+
+  async function send() {
+    var text = inp.value.trim();
+    if (!text || busy || !ready()) return;
+    busy = true; sendBtn.disabled = true;
+    inp.value = "";
+    add("me", text);
+    history.push({ role: "user", content: text });
+    var out = add("", "...");
+    var acc = "";
+    try {
+      var resp = await puter.ai.chat(history, { model: $("model").value.trim() || "claude-sonnet-5-5", stream: true });
+      for await (var part of resp) {
+        if (part && part.text) { acc += part.text; out.textContent = acc; log.scrollTop = log.scrollHeight; }
+      }
+      if (!acc) out.textContent = "(empty reply)";
+      history.push({ role: "assistant", content: acc });
+    } catch (e) {
+      out.className = "m err";
+      out.textContent = "Error: " + errText(e);
+      history.pop();                 // drop the unanswered question so a retry does not duplicate it
+    }
+    busy = false; sendBtn.disabled = false;
+    refreshUser();
+  }
+
+  sendBtn.addEventListener("click", send);
+  inp.addEventListener("keydown", function (e) {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+  });
+  $("clear").addEventListener("click", function () { history = []; log.textContent = ""; });
+  $("signin").addEventListener("click", async function () {
+    if (!ready()) return;
+    try {
+      if (puter.auth.isSignedIn()) { puter.auth.signOut(); }
+      else { await puter.auth.signIn(); }
+    } catch (e) { setStatus("Sign-in did not finish: " + errText(e)); }
+    refreshUser();
+  });
+
+  var tries = 0;
+  (function wait() {
+    if (ready()) { refreshUser(); loadModels(); return; }
+    if (++tries > 60) { setStatus("Could not load Puter.js (js.puter.com). Check the connection and reopen this screen."); return; }
+    setTimeout(wait, 250);
+  })();
+})();
+</script>
+</body>
+</html>

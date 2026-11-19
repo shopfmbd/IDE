@@ -22,6 +22,5 @@ src.zip
 *.gpg.tmp
 *.keystore
 *.jks
-**/debug.pk8
 **/release.pk8
 *.pem

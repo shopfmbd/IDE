@@ -1,0 +1,178 @@
+{
+  "version": 1,
+  "comment": "Language plugins. One entry per language. The app reads this file, then plugins.json from the toolchain release (so new languages need no app update), then any plugin.json you import. packs.yml builds every entry that has a 'termux' field. See PLUGINS.md.",
+  "plugins": [
+    {
+      "id": "kotlin", "label": "Kotlin", "kind": "jvm", "mb": 70,
+      "what": "kotlinc, runs inside the app (experimental)",
+      "detect": { "ext": [".kt"] },
+      "builtin": true
+    },
+    {
+      "id": "clang", "label": "C / C++", "kind": "native", "mb": 250,
+      "what": "clang, lld, make, cmake, ninja",
+      "termux": "libllvm make cmake ninja",
+      "detect": { "ext": [".c", ".cpp", ".cc", ".cxx", ".h", ".hpp"], "files": ["CMakeLists.txt", "Makefile", "makefile", "GNUmakefile"] },
+      "probes": [["clang", "--version"], ["make", "--version"], ["cmake", "--version"]],
+      "builtin": true
+    },
+    {
+      "id": "rust", "label": "Rust", "kind": "native", "mb": 400, "requires": ["clang"],
+      "what": "rustc, cargo (needs C / C++, it links)",
+      "termux": "rust",
+      "detect": { "ext": [".rs"], "files": ["Cargo.toml"] },
+      "probes": [["rustc", "--version"], ["cargo", "--version"]],
+      "builtin": true
+    },
+    {
+      "id": "go", "label": "Go", "kind": "native", "mb": 180,
+      "what": "go toolchain",
+      "termux": "golang",
+      "detect": { "ext": [".go"], "files": ["go.mod"] },
+      "probes": [["go", "version"]],
+      "builtin": true
+    },
+    {
+      "id": "python", "label": "Python", "kind": "native", "mb": 60,
+      "what": "python 3 and pip",
+      "termux": "python python-pip",
+      "detect": { "ext": [".py"], "files": ["requirements.txt", "pyproject.toml", "setup.py"] },
+      "probes": [["python", "--version"]],
+      "builtin": true
+    },
+    {
+      "id": "node", "label": "JavaScript / Node", "kind": "native", "mb": 50,
+      "what": "node and npm",
+      "termux": "nodejs",
+      "detect": { "ext": [".js", ".mjs", ".cjs"], "files": ["package.json"] },
+      "probes": [["node", "--version"], ["npm", "--version"]],
+      "builtin": true
+    },
+    {
+      "id": "typescript", "label": "TypeScript", "kind": "meta", "mb": 0, "requires": ["node"],
+      "what": "tsc through npm (needs the Node pack)",
+      "detect": { "ext": [".ts", ".tsx"], "files": ["tsconfig.json"], "skipSuffix": [".d.ts"] },
+      "build": { "projects": [ { "marker": "tsconfig.json", "steps": [["npm", "install", "--no-audit", "--no-fund"], ["npx", "--no-install", "tsc", "-p", "."]] } ] },
+      "diag": { "re": "^(.+?)\\((\\d+),(\\d+)\\): (error|warning) TS\\d+: (.*)$", "file": 1, "line": 2, "col": 3, "sev": 4, "msg": 5 }
+    },
+    {
+      "id": "ruby", "label": "Ruby", "kind": "native", "mb": 60,
+      "what": "ruby, gem, bundler",
+      "termux": "ruby",
+      "detect": { "ext": [".rb"], "files": ["Gemfile"] },
+      "env": { "GEM_HOME": "${HOME}/.gem", "GEM_PATH": "${HOME}/.gem" },
+      "probes": [["ruby", "--version"]],
+      "build": { "projects": [ { "marker": "Gemfile", "steps": [["bundle", "install"]] } ],
+                 "perFile": [ { "ext": [".rb"], "steps": [["ruby", "-c", "{file}"]] } ] },
+      "run": ["ruby", "{file}"],
+      "diag": { "re": "^(.+?\\.rb):(\\d+):\\s*(?:syntax )?(error)?,?\\s*(.*)$", "file": 1, "line": 2, "sev": 3, "msg": 4 }
+    },
+    {
+      "id": "php", "label": "PHP", "kind": "native", "mb": 50,
+      "what": "php command line",
+      "termux": "php",
+      "detect": { "ext": [".php"], "files": ["composer.json"] },
+      "probes": [["php", "--version"]],
+      "build": { "perFile": [ { "ext": [".php"], "steps": [["php", "-l", "{file}"]] } ] },
+      "run": ["php", "{file}"],
+      "diag": { "re": "^(?:PHP )?(?:Parse|Fatal) error:\\s+(.*) in (.+) on line (\\d+)$", "msg": 1, "file": 2, "line": 3 }
+    },
+    {
+      "id": "lua", "label": "Lua", "kind": "native", "mb": 5,
+      "what": "lua 5.4 and luac",
+      "termux": "lua54",
+      "detect": { "ext": [".lua"] },
+      "probes": [["lua5.4", "-v"]],
+      "build": { "perFile": [ { "ext": [".lua"], "steps": [["luac5.4", "-p", "{file}"]] } ] },
+      "run": ["lua5.4", "{file}"],
+      "diag": { "re": "^(?:luac[\\d.]*: )?(.+?):(\\d+): (.*)$", "file": 1, "line": 2, "msg": 3 }
+    },
+    {
+      "id": "perl", "label": "Perl", "kind": "native", "mb": 40,
+      "what": "perl",
+      "termux": "perl",
+      "detect": { "ext": [".pl", ".pm"], "files": ["Makefile.PL", "cpanfile"] },
+      "probes": [["perl", "--version"]],
+      "build": { "perFile": [ { "ext": [".pl", ".pm"], "steps": [["perl", "-c", "{file}"]] } ] },
+      "run": ["perl", "{file}"],
+      "diag": { "re": "^(.*) at (.+?) line (\\d+)[.,]", "msg": 1, "file": 2, "line": 3 }
+    },
+    {
+      "id": "zig", "label": "Zig", "kind": "native", "mb": 150,
+      "what": "zig compiler and build system",
+      "termux": "zig",
+      "detect": { "ext": [".zig"], "files": ["build.zig"] },
+      "probes": [["zig", "version"]],
+      "build": { "projects": [ { "marker": "build.zig", "steps": [["zig", "build", "--prefix", "{out}"]] } ],
+                 "perFile": [ { "ext": [".zig"], "steps": [["zig", "ast-check", "{file}"]] },
+                              { "ext": [".zig"], "match": "pub\\s+fn\\s+main", "steps": [["zig", "build-exe", "{file}", "-O", "ReleaseSafe", "-femit-bin={out}/{name}"]] } ] },
+      "diag": { "re": "^(.+?\\.zig):(\\d+):(\\d+): (error|warning|note): (.*)$", "file": 1, "line": 2, "col": 3, "sev": 4, "msg": 5 }
+    },
+    {
+      "id": "nim", "label": "Nim", "kind": "native", "mb": 60, "requires": ["clang"],
+      "what": "nim compiler (builds through clang)",
+      "termux": "nim",
+      "detect": { "ext": [".nim"], "files": ["*.nimble"] },
+      "probes": [["nim", "--version"]],
+      "build": { "perFile": [ { "ext": [".nim"], "steps": [["nim", "check", "--hints:off", "{file}"]] },
+                              { "ext": [".nim"], "match": "isMainModule|(?m)^echo\\b", "steps": [["nim", "c", "--cc:clang", "-d:release", "--hints:off", "--nimcache:{cache}", "-o:{out}/{name}", "{file}"]] } ] },
+      "diag": { "re": "^(.+?\\.nim)\\((\\d+), (\\d+)\\) (Error|Warning): (.*)$", "file": 1, "line": 2, "col": 3, "sev": 4, "msg": 5 }
+    },
+    {
+      "id": "dlang", "label": "D", "kind": "native", "mb": 120, "requires": ["clang"],
+      "what": "ldc2, the LLVM D compiler",
+      "termux": "ldc",
+      "detect": { "ext": [".d"], "files": ["dub.json", "dub.sdl"] },
+      "probes": [["ldc2", "--version"]],
+      "build": { "perFile": [ { "ext": [".d"], "match": "void\\s+main\\s*\\(|int\\s+main\\s*\\(", "steps": [["ldc2", "-O", "-of={out}/{name}", "{file}"]] } ] },
+      "diag": { "re": "^(.+?\\.d)\\((\\d+)(?:,(\\d+))?\\): (Error|Warning): (.*)$", "file": 1, "line": 2, "col": 3, "sev": 4, "msg": 5 }
+    },
+    {
+      "id": "ocaml", "label": "OCaml", "kind": "native", "mb": 120, "requires": ["clang"],
+      "what": "ocamlc, ocamlopt",
+      "termux": "ocaml",
+      "detect": { "ext": [".ml"], "files": ["dune-project"] },
+      "probes": [["ocamlopt", "-version"]],
+      "build": { "perFile": [ { "ext": [".ml"], "match": "(?m)^let\\s+\\(\\)\\s*=|print_endline|Printf\\.printf", "steps": [["ocamlopt", "-o", "{out}/{name}", "{file}"]] } ] }
+    },
+    {
+      "id": "dart", "label": "Dart", "kind": "native", "mb": 200,
+      "what": "dart sdk (command line Dart, not Flutter)",
+      "termux": "dart",
+      "detect": { "ext": [".dart"] },
+      "probes": [["dart", "--version"]],
+      "build": { "projects": [ { "marker": "pubspec.yaml", "steps": [["dart", "pub", "get"]] } ],
+                 "perFile": [ { "ext": [".dart"], "steps": [["dart", "analyze", "{file}"]] },
+                              { "ext": [".dart"], "match": "void\\s+main\\s*\\(", "steps": [["dart", "compile", "exe", "{file}", "-o", "{out}/{name}"]] } ] },
+      "run": ["dart", "run", "{file}"],
+      "diag": { "re": "^\\s*(error|warning) - (.+?):(\\d+):(\\d+) - (.*?)(?: - \\w+)?$", "sev": 1, "file": 2, "line": 3, "col": 4, "msg": 5 }
+    },
+    {
+      "id": "erlang", "label": "Erlang", "kind": "native", "mb": 90,
+      "what": "erlc and the BEAM",
+      "termux": "erlang",
+      "detect": { "ext": [".erl"], "files": ["rebar.config"] },
+      "probes": [["erl", "-noshell", "-eval", "halt()."]],
+      "build": { "perFile": [ { "ext": [".erl"], "steps": [["erlc", "-o", "{out}", "{file}"]] } ] },
+      "diag": { "re": "^(.+?\\.erl):(\\d+)(?::(\\d+))?: (Warning: )?(.*)$", "file": 1, "line": 2, "col": 3, "sev": 4, "msg": 5 }
+    },
+    {
+      "id": "elixir", "label": "Elixir", "kind": "native", "mb": 40, "requires": ["erlang"],
+      "what": "elixir, mix",
+      "termux": "elixir",
+      "detect": { "ext": [".ex", ".exs"], "files": ["mix.exs"] },
+      "probes": [["elixir", "--version"]],
+      "build": { "projects": [ { "marker": "mix.exs", "steps": [["mix", "compile"]] } ],
+                 "perFile": [ { "ext": [".ex"], "steps": [["elixirc", "-o", "{out}", "{file}"]] } ] },
+      "run": ["elixir", "{file}"],
+      "diag": { "re": "^\\s*(?:error|warning): (.*)$", "msg": 1 }
+    },
+    {
+      "id": "jdk", "label": "Java JDK (manual)", "kind": "native", "mb": 300,
+      "what": "java, javac, jar for the terminal. Not needed for building: Java and Android builds already run inside the app.",
+      "termux": "openjdk-21",
+      "manual": true,
+      "probes": [["java", "-version"]]
+    }
+  ]
+}

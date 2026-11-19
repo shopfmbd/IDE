@@ -1,0 +1,73 @@
+# cloudide:node
+name: Node and React Native Build
+on:
+  workflow_dispatch:
+    inputs:
+      task:
+        description: Gradle task
+        default: assembleDebug
+      gradle:
+        description: Gradle version
+        default: '9.8.2'
+      jdk:
+        description: JDK version
+        default: '17'
+      artifact:
+        description: Output files pattern
+        default: ''
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Decrypt source (only when src.zip.enc exists)
+        env:
+          SOURCE_PASSPHRASE: ${{ secrets.SOURCE_PASSPHRASE }}
+        run: |
+          if [ -f src.zip.enc ]; then
+            [ -n "$SOURCE_PASSPHRASE" ] || { echo 'Secret SOURCE_PASSPHRASE is missing'; exit 1; }
+            openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass env:SOURCE_PASSPHRASE -in src.zip.enc -out src.zip
+            unzip -qo src.zip
+            shred -u src.zip 2>/dev/null || rm -f src.zip
+          fi
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: ${{ github.event.inputs.jdk || '17' }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+      - name: Build
+        run: |
+          npm ci || npm install
+          if [ -d android ]; then
+            cd android
+            if [ -f ./gradlew ]; then chmod +x ./gradlew; ./gradlew --no-daemon assembleDebug; else echo "android/gradlew is missing"; exit 1; fi
+          else
+            npm run build --if-present
+          fi
+      - name: Encrypt outputs (only when secret OUTPUT_PASSPHRASE is set)
+        env:
+          OUTPUT_PASSPHRASE: ${{ secrets.OUTPUT_PASSPHRASE }}
+        run: |
+          [ -n "$OUTPUT_PASSPHRASE" ] || exit 0
+          find . -type f \( -path '*/build/outputs/*' -o -path './build/app/outputs/flutter-apk/*' -o -path './cloudide-out/*' -o -path './dist/*' \) \
+            ! -name '*.enc' ! -name '*.txt' -print0 | while IFS= read -r -d '' f; do
+            openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass env:OUTPUT_PASSPHRASE -in "$f" -out "$f.enc" && rm -f "$f"
+          done
+      - uses: actions/upload-artifact@v7
+        with:
+          name: output
+          path: |
+            ${{ github.event.inputs.artifact }}
+            android/app/build/outputs/apk/**/*.apk
+            dist/**
+            **/*.enc
+            !src.zip.enc
+          if-no-files-found: warn
+          retention-days: 1

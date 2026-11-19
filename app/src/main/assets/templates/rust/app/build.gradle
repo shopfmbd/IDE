@@ -1,0 +1,28 @@
+plugins { id 'com.android.application' }
+android {
+    namespace = '__PKG__'
+    compileSdk = 37
+    defaultConfig {
+        applicationId = '__PKG__'
+        minSdk = 24
+        targetSdk = 37
+        versionCode = 1
+        versionName = '1.0'
+    }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+}
+dependencies {
+    implementation 'androidx.appcompat:appcompat:1.7.1'
+    implementation 'com.google.android.material:material:1.13.0'
+}
+
+// Builds the Rust library for every Android ABI before the app is packaged.
+task cargoBuild(type: Exec) {
+    workingDir "${rootDir}/rust"
+    commandLine 'cargo', 'ndk', '-t', 'arm64-v8a', '-t', 'armeabi-v7a', '-t', 'x86_64',
+            '-o', "${projectDir}/src/main/jniLibs", 'build', '--release'
+}
+preBuild.dependsOn cargoBuild
